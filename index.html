@@ -489,19 +489,110 @@ tr:hover td{background:rgba(0,160,200,.04)}
 <div class="mw" id="msw"><div class="mb" id="msb"></div></div>
 
 <script>
+// ╔══════════════════════════════════════════════════╗
+// ║  ⚙️  SUPABASE CONFIG  — 修改这里填入你的信息     ║
+// ╚══════════════════════════════════════════════════╝
+// ⚙️ CONFIG — 填入你的 Supabase 信息
 // ═══════════════════════════════════════
-// DATA
-// ═══════════════════════════════════════
-const DK='ubfh2',AP='admin888';
-const gDB=()=>{try{const r=localStorage.getItem(DK);if(r)return JSON.parse(r)}catch(e){}return{players:[]}};
-const sDB=d=>{try{localStorage.setItem(DK,JSON.stringify(d))}catch(e){}};
+const SUPA_URL = 'https://mdbyvqayeyfadxoeqquk.supabase.co'; // ← 你的项目 URL
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kYnl2cWF5ZXlmYWR4b2VxcXVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwNzQ5OTYsImV4cCI6MjA5NjY1MDk5Nn0.h7dqsREJAGbGKgetcE5DB1CvisCs0ADqbJ_sDyi5Fgk'; // ← 粘贴你的 anon key (从 API Keys 页面复制)
+const AP = 'admin888';
+
+// ── Supabase REST helper ──
+async function sb(path, method='GET', body=null, extra='') {
+  try {
+    const res = await fetch(SUPA_URL+'/rest/v1/'+path+extra, {
+      method,
+      headers: {
+        'apikey': SUPA_KEY,
+        'Authorization': 'Bearer '+SUPA_KEY,
+        'Content-Type': 'application/json',
+        'Prefer': method==='POST'?'return=representation':(method==='PATCH'?'return=representation':'')
+      },
+      body: body ? JSON.stringify(body) : null
+    });
+    if(!res.ok){ const e=await res.text(); console.warn('SB error:',e); return null; }
+    const txt=await res.text();
+    return txt?JSON.parse(txt):null;
+  } catch(e){ console.warn('SB fetch error:',e); return null; }
+}
+
+// ── Local cache (sessionStorage) ──
 const gCP=()=>{try{const r=sessionStorage.getItem('ubfh_p');if(r)return JSON.parse(r)}catch(e){}return null};
 const sCP=p=>sessionStorage.setItem('ubfh_p',JSON.stringify(p));
-function upCP(p){const d=gDB();const i=d.players.findIndex(x=>x.id===p.id);if(i>=0)d.players[i]=p;sDB(d);sCP(p)}
+
+// ── ID generators ──
 const gID=()=>'U'+Math.random().toString(36).substr(2,6).toUpperCase();
 const gRC=()=>'U'+Math.floor(10+Math.random()*90)+Math.random().toString(36).substr(2,4).toUpperCase();
 const mPh=p=>(!p||p.length<6)?p:p.slice(0,3)+'****'+p.slice(-3);
-const cRf=(code,ps)=>ps.filter(p=>p.rby===code).length;
+
+// ── Supabase CRUD ──
+async function dbGetPlayerByPhone(phone){
+  const d=await sb(`players?phone=eq.${encodeURIComponent(phone)}&limit=1`);
+  return d&&d[0]?d[0]:null;
+}
+async function dbPhoneExists(phone){
+  const d=await sb(`players?phone=eq.${encodeURIComponent(phone)}&select=id&limit=1`);
+  return d&&d.length>0;
+}
+async function dbCreatePlayer(p){
+  return await sb('players','POST',{
+    id:p.id, name:p.name, phone:p.phone,
+    ref_code:p.rco, ref_by:p.rby||null,
+    coins:p.coins||0, lucky_draws:p.luckyDraws||0,
+    weapon:p.weapon||'default'
+  });
+}
+async function dbUpdatePlayer(p){
+  return await sb(`players?id=eq.${p.id}`,'PATCH',{
+    name:p.name, score:p.score||0, best_score:p.bestScore||0,
+    coins:p.coins||0, lucky_draws:p.luckyDraws||0,
+    games_played:p.gamesPlayed||0, total_fish:p.totalFish||0,
+    weapon:p.weapon||'default', suspicious:p.suspicious||false,
+    last_login:new Date().toISOString()
+  });
+}
+async function dbCreditReferrer(refCode){
+  // Find referrer and add 500 coins
+  const d=await sb(`players?ref_code=eq.${refCode}&select=id,coins&limit=1`);
+  if(d&&d[0]){
+    await sb(`players?id=eq.${d[0].id}`,'PATCH',{coins:(d[0].coins||0)+500});
+  }
+}
+async function dbGetLeaderboard(){
+  return await sb('players?select=id,name,phone,best_score&order=best_score.desc&limit=100')||[];
+}
+async function dbGetAllPlayers(){
+  return await sb('players?select=*&order=reg_date.desc')||[];
+}
+async function dbCountReferrals(refCode){
+  const d=await sb(`players?ref_by=eq.${refCode}&select=id`);
+  return d?d.length:0;
+}
+async function dbGetMission(playerId){
+  const today=new Date().toISOString().slice(0,10);
+  const d=await sb(`missions?player_id=eq.${playerId}&mission_date=eq.${today}&limit=1`);
+  return d&&d[0]?d[0]:null;
+}
+async function dbUpsertMission(playerId,data){
+  const today=new Date().toISOString().slice(0,10);
+  return await sb('missions','POST',{player_id:playerId,mission_date:today,...data},'?on_conflict=player_id,mission_date');
+}
+async function dbAddRewardHistory(playerId,item,cost){
+  return await sb('reward_history','POST',{player_id:playerId,item,cost});
+}
+async function dbGetRewardHistory(playerId){
+  return await sb(`reward_history?player_id=eq.${playerId}&order=created_at.desc&limit=20`)||[];
+}
+
+// ── upCP: update local cache + Supabase ──
+async function upCP(p){
+  sCP(p);
+  await dbUpdatePlayer(p);
+}
+
+// ── Legacy localStorage helpers (kept for admin/local fallback) ──
+const cRf=async(code)=>await dbCountReferrals(code);
 
 // ═══════════════════════════════════════
 // LANGUAGE
@@ -556,7 +647,7 @@ document.getElementById('bvr').addEventListener('click',()=>{
   const f=gDB().players.find(p=>p.rco===code);
   el.style.display='block';el.style.color=f?'#2ed573':'var(--rd)';
   el.textContent=f?'✅ 有效推荐码！+500金币':'无效推荐码'});
-document.getElementById('breg').addEventListener('click',()=>{
+document.getElementById('breg').addEventListener('click',async()=>{
   const name=document.getElementById('inn').value.trim();
   const phone=document.getElementById('iph').value.trim();
   const ref=document.getElementById('irf').value.trim().toUpperCase();
@@ -567,20 +658,42 @@ document.getElementById('breg').addEventListener('click',()=>{
   if(!phone||phone.length<8||!/^\d+$/.test(phone.replace(/[-+\s]/g,''))){document.getElementById('ep').textContent='请输入有效手机号码';document.getElementById('ep').classList.add('on');ok=false}
   if(!pdpa){notif('请同意隐私政策','g');ok=false}
   if(!ok)return;
-  const db=gDB();if(db.players.find(p=>p.phone===phone)){document.getElementById('ep').textContent='该手机号已注册';document.getElementById('ep').classList.add('on');return}
-  let bonus=0,rby=null;
-  if(ref){const rr=db.players.find(p=>p.rco===ref);if(rr){rby=ref;bonus=500;rr.coins=(rr.coins||0)+500;const ri=db.players.findIndex(p=>p.id===rr.id);if(ri>=0)db.players[ri]=rr}}
-  const player={id:gID(),name,phone,rco:gRC(),rby,score:0,bestScore:0,coins:bonus,luckyDraws:0,
-    gamesPlayed:0,totalFish:0,missions:{},rewHist:[],weapon:'default',
-    suspicious:false,regDate:new Date().toLocaleString(),lastLogin:new Date().toLocaleString()};
-  db.players.push(player);sDB(db);sCP(player);
-  if(bonus>0)notif('🎉 推荐 +'+bonus+' 金币！','g');
-  ss('sh');apl();updHome();notif('🎣 欢迎 '+name+'！ID: '+player.id,'c')});
-document.getElementById('blin').addEventListener('click',()=>{
+  // Show loading
+  const btn=document.getElementById('breg');btn.textContent='⏳ 注册中...';btn.disabled=true;
+  try{
+    const exists=await dbPhoneExists(phone);
+    if(exists){document.getElementById('ep').textContent='该手机号已注册';document.getElementById('ep').classList.add('on');btn.textContent='🎮 开始游戏 / Start Game';btn.disabled=false;return}
+    let bonus=0,rby=null;
+    if(ref){const d=await sb(`players?ref_code=eq.${ref}&select=id&limit=1`);if(d&&d[0]){rby=ref;bonus=500;await dbCreditReferrer(ref);}}
+    const player={id:gID(),name,phone,rco:gRC(),rby,score:0,bestScore:0,coins:bonus,luckyDraws:0,
+      gamesPlayed:0,totalFish:0,missions:{},rewHist:[],weapon:'default',
+      suspicious:false,regDate:new Date().toLocaleString(),lastLogin:new Date().toLocaleString()};
+    await dbCreatePlayer(player);
+    sCP(player);
+    if(bonus>0)notif('🎉 推荐 +'+bonus+' 金币！','g');
+    ss('sh');apl();updHome();notif('🎣 欢迎 '+name+'！ID: '+player.id,'c');
+  }catch(e){notif('注册失败，请重试','g');console.error(e);}
+  btn.textContent='🎮 开始游戏 / Start Game';btn.disabled=false;
+});
+document.getElementById('blin').addEventListener('click',async()=>{
   const phone=document.getElementById('iph').value.trim();if(!phone){notif('请输入手机号','g');return}
-  const db=gDB();const p=db.players.find(x=>x.phone===phone);
-  if(p){p.lastLogin=new Date().toLocaleString();const i=db.players.findIndex(x=>x.id===p.id);db.players[i]=p;sDB(db);sCP(p);ss('sh');apl();updHome();notif('👋 欢迎 '+p.name,'c')}
-  else notif('未找到，请先注册','g')});
+  const btn=document.getElementById('blin');btn.textContent='⏳...';btn.disabled=true;
+  try{
+    const raw=await dbGetPlayerByPhone(phone);
+    if(raw){
+      // Map DB columns to local player object
+      const p={id:raw.id,name:raw.name,phone:raw.phone,rco:raw.ref_code,rby:raw.ref_by,
+        score:raw.score||0,bestScore:raw.best_score||0,coins:raw.coins||0,
+        luckyDraws:raw.lucky_draws||0,gamesPlayed:raw.games_played||0,
+        totalFish:raw.total_fish||0,weapon:raw.weapon||'default',
+        suspicious:raw.suspicious||false,rewHist:[],missions:{}};
+      sCP(p);
+      await sb(`players?id=eq.${p.id}`,'PATCH',{last_login:new Date().toISOString()});
+      ss('sh');apl();updHome();notif('👋 欢迎 '+p.name,'c');
+    } else notif('未找到，请先注册','g');
+  }catch(e){notif('登录失败，请重试','g');console.error(e);}
+  btn.textContent='登录';btn.disabled=false;
+});
 
 // ═══════════════════════════════════════
 // HOME BUTTONS
@@ -596,15 +709,17 @@ document.getElementById('bsh').addEventListener('click',()=>{const p=gCP();docum
 // ═══════════════════════════════════════
 // OVERLAY BUILDERS
 // ═══════════════════════════════════════
-function bldLB(){
-  const ps=gDB().players.slice().sort((a,b)=>(b.bestScore||0)-(a.bestScore||0)).slice(0,100);
-  const el=document.getElementById('lbl');el.innerHTML='';
-  if(!ps.length){el.innerHTML='<div style="text-align:center;color:var(--dm);padding:16px">暂无数据</div>';return}
+async function bldLB(){
+  const el=document.getElementById('lbl');
+  el.innerHTML='<div style="text-align:center;color:var(--dm);padding:16px">⏳ 加载中...</div>';
+  const ps=await dbGetLeaderboard();
+  el.innerHTML='';
+  if(!ps||!ps.length){el.innerHTML='<div style="text-align:center;color:var(--dm);padding:16px">暂无数据</div>';return}
   ps.forEach((p,i)=>{const r=i+1;const m=r===1?'🥇':r===2?'🥈':r===3?'🥉':'';
     const d=document.createElement('div');d.className='li';
     d.innerHTML=`<div class="lr" style="color:${r<=3?'var(--go)':'var(--dm)'}">${m||r}</div>
       <div class="lin"><div class="ln">${p.name}</div><div class="lp">${mPh(p.phone)}</div></div>
-      <div class="lsc">${p.bestScore||0}</div>`;el.appendChild(d)})}
+      <div class="lsc">${p.best_score||0}</div>`;el.appendChild(d)})}
 function bldMS(){
   const p=gCP();if(!p)return;
   const td=new Date().toDateString(),md=(p.missions&&p.missions[td])||{},cl=(p._mc&&p._mc[td])||{};
@@ -650,19 +765,25 @@ function opRC(){const p=gCP();if(!p)return;
   document.getElementById('rcdr').textContent=p.luckyDraws||0;
   bldRH();bldRCRF();sov('ovrc')}
 function srt(t){document.querySelectorAll('.rtb').forEach((b,i)=>b.classList[['rw','rh','rr'][i]===t?'add':'remove']('ac'));document.querySelectorAll('.rct').forEach(c=>c.classList.remove('ac'));document.getElementById(t).classList.add('ac')}
-function bldRH(){const p=gCP();if(!p)return;const h=p.rewHist||[];const el=document.getElementById('rchl');
-  el.innerHTML=h.length?h.slice().reverse().map(x=>`<div class="rh">🎁 ${x.item} -${x.cost}🪙 ${x.date}</div>`).join(''):'<div style="text-align:center;color:var(--dm);padding:16px">暂无记录</div>'}
+async function bldRH(){
+  const p=gCP();if(!p)return;
+  const el=document.getElementById('rchl');
+  el.innerHTML='<div style="text-align:center;color:var(--dm)">⏳ 加载中...</div>';
+  const h=await dbGetRewardHistory(p.id)||[];
+  el.innerHTML=h.length?h.map(x=>`<div class="rh">🎁 ${x.item} -${x.cost}🪙 ${new Date(x.created_at).toLocaleString()}</div>`).join(''):'<div style="text-align:center;color:var(--dm);padding:16px">暂无记录</div>'}
 function bldRCRF(){const p=gCP();if(!p)return;const rc=cRf(p.rco,gDB().players);
   document.getElementById('rcrfc').innerHTML=`<div style="font-size:11px;color:var(--dm)">推荐码</div>
     <div class="rfco">${p.rco}</div>
     <div class="rfs"><div><div class="rsv">${rc}</div><div class="rsl">好友</div></div>
       <div><div class="rsv">${rc*500}</div><div class="rsl">金币</div></div></div>`}
-function rdm(type){const p=gCP();if(!p)return;
+async function rdm(type){const p=gCP();if(!p)return;
   const cs={draw:500,bomb:300,fever:800},ns={draw:'Lucky Draw',bomb:'Bomb',fever:'Fever'};
   if((p.coins||0)<cs[type]){notif('金币不足！','g');return}
   p.coins-=cs[type];if(type==='draw')p.luckyDraws=(p.luckyDraws||0)+1;
-  p.rewHist.push({item:ns[type],cost:cs[type],date:new Date().toLocaleString()});
-  upCP(p);updHome();document.getElementById('rcco').textContent=p.coins;
+  sCP(p);
+  await upCP(p);
+  await dbAddRewardHistory(p.id,ns[type],cs[type]);
+  updHome();document.getElementById('rcco').textContent=p.coins;
   document.getElementById('rcdr').textContent=p.luckyDraws||0;bldRH();notif('✅ '+ns[type],'g');confetti(18)}
 const stxt=s=>`🐟 我刚刚在U宝 Fish Hunter 打出了 ${s} 分！\n你能超越我吗？\n立即挑战！\nhttps://boscool-cloud.github.io/ubao-fish-hunter/`;
 function shg(p,sc){const tx=encodeURIComponent(stxt(sc!==undefined?sc:(gCP()?.bestScore||0)));
@@ -689,24 +810,31 @@ document.getElementById('balin').addEventListener('click',()=>{
   else document.getElementById('eapw').classList.add('on')});
 document.getElementById('barf').addEventListener('click',ldAdm);
 document.getElementById('baot').addEventListener('click',()=>{document.getElementById('apw').value='';ss('sr')});
-function ldAdm(){const db=gDB(),ps=db.players;
-  const tg=ps.reduce((s,p)=>s+(p.gamesPlayed||0),0);
-  const av=ps.length?Math.round(ps.reduce((s,p)=>s+(p.bestScore||0),0)/ps.length):0;
-  const hi=ps.length?Math.max(...ps.map(p=>p.bestScore||0)):0;
+async function ldAdm(){
+  document.getElementById('adst').innerHTML='<div style="color:var(--dm);padding:8px">⏳ Loading...</div>';
+  const ps=await dbGetAllPlayers()||[];
+  const tg=ps.reduce((s,p)=>s+(p.games_played||0),0);
+  const av=ps.length?Math.round(ps.reduce((s,p)=>s+(p.best_score||0),0)/ps.length):0;
+  const hi=ps.length?Math.max(...ps.map(p=>p.best_score||0)):0;
   const sts=[{l:'Players',v:ps.length,i:'👥'},{l:'Games',v:tg,i:'🎮'},
     {l:'Avg Score',v:av,i:'📊'},{l:'High Score',v:hi,i:'🏆'},
-    {l:'Referrals',v:ps.reduce((s,p)=>s+(p.rby?1:0),0),i:'🔗'},
+    {l:'Referrals',v:ps.filter(p=>p.ref_by).length,i:'🔗'},
     {l:'Flagged',v:ps.filter(p=>p.suspicious).length,i:'⚠️'}];
   document.getElementById('adst').innerHTML=sts.map(s=>`<div class="asc glass"><div style="font-size:20px">${s.i}</div><div class="asv">${s.v}</div><div class="asl">${s.l}</div></div>`).join('');
-  document.getElementById('adbd').innerHTML=ps.map((p,i)=>`<tr><td>${i+1}</td><td>${p.name}</td><td>${mPh(p.phone)}</td>
+  document.getElementById('adbd').innerHTML=ps.map((p,i)=>`<tr>
+    <td>${i+1}</td><td>${p.name}</td><td>${mPh(p.phone)}</td>
     <td style="font-family:'Orbitron',monospace;font-size:9px">${p.id}</td>
-    <td style="color:var(--cy)">${p.bestScore||0}</td><td style="color:var(--go)">${p.coins||0}</td>
-    <td>${cRf(p.rco,ps)}</td><td style="font-size:9px;color:var(--dm)">${p.regDate||'-'}</td>
-    <td><span class="bdg ${p.suspicious?'bfl':'bok'}">${p.suspicious?'⚠️ Flag':'✅ OK'}</span></td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--dm);padding:16px">No players</td></tr>'}
-document.getElementById('bcsv').addEventListener('click',()=>{const db=gDB();
-  const h='#,Name,Phone,ID,Score,Coins,Refs,Date,Status';
-  const r=db.players.map((p,i)=>[i+1,p.name,p.phone,p.id,p.bestScore||0,p.coins||0,cRf(p.rco,db.players),p.regDate||'',p.suspicious?'Flag':'OK'].join(','));
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([[h,...r].join('\n')],{type:'text/csv'}));a.download='ubao.csv';a.click()});
+    <td style="color:var(--cy)">${p.best_score||0}</td>
+    <td style="color:var(--go)">${p.coins||0}</td>
+    <td>${p.ref_code?'...':'-'}</td>
+    <td style="font-size:9px;color:var(--dm)">${p.reg_date?new Date(p.reg_date).toLocaleString():'-'}</td>
+    <td><span class="bdg ${p.suspicious?'bfl':'bok'}">${p.suspicious?'⚠️ Flag':'✅ OK'}</span></td>
+    </tr>`).join('')||'<tr><td colspan="9" style="text-align:center;color:var(--dm);padding:16px">No players</td></tr>'}
+document.getElementById('bcsv').addEventListener('click',async()=>{
+  const ps=await dbGetAllPlayers()||[];
+  const h='#,Name,Phone,ID,Best Score,Coins,Reg Date,Status';
+  const r=ps.map((p,i)=>[i+1,p.name,p.phone,p.id,p.best_score||0,p.coins||0,p.reg_date?new Date(p.reg_date).toLocaleString():'',p.suspicious?'Flag':'OK'].join(','));
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([[h,...r].join('\n')],{type:'text/csv'}));a.download='ubao-players.csv';a.click()});
 document.getElementById('bxls').addEventListener('click',()=>{const db=gDB();
   const r=db.players.map((p,i)=>`${i+1}\t${p.name}\t${p.phone}\t${p.id}\t${p.bestScore||0}\t${p.coins||0}`);
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([['#\tName\tPhone\tID\tScore\tCoins',...r].join('\n')],{type:'application/vnd.ms-excel'}));a.download='ubao.xls';a.click()});
@@ -1507,7 +1635,8 @@ function endGame(){
   if(!GS||!GS.running)return;GS.running=false;if(RAF){cancelAnimationFrame(RAF);RAF=null}
   const p=gCP();if(!p)return;const sc=GS.score;
   if(sc>(p.bestScore||0))p.bestScore=sc;p.score=sc;p.coins=(p.coins||0)+GS.coins;p.totalFish=(p.totalFish||0)+GS.fc;
-  upCP(p);const db=gDB();db.leaderboard=db.players.slice().sort((a,b)=>(b.bestScore||0)-(a.bestScore||0)).slice(0,100);sDB(db);
+  sCP(p); // update local immediately
+  upCP(p); // async save to Supabase
   document.getElementById('gos').textContent=sc;
   document.getElementById('gob').textContent=(lang==='zh'?'最高记录: ':'Best: ')+p.bestScore;
   document.getElementById('gofi').textContent=GS.fc;document.getElementById('goco').textContent='+'+GS.coins;
